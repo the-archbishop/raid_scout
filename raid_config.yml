@@ -1,0 +1,25 @@
+twitch:
+  client_id:
+  client_secret:
+
+raid:
+  cooldown_hours: 168  # 7 days
+  long_stream_hours: 2
+
+channels:
+  - name: traveldanielle
+    priority: 3
+  - name: poopernoodle
+    priority: 3
+  - name: luality
+    priority: 1
+  - name: sherlockhulmes_
+    priority: 1
+  - name: poopernoodle
+    priority: 3
+  - name: eliseteria
+    priority: 3
+  - name: parkenharbor
+    priority: 3
+  - name: lilaggy
+    priority: 3
