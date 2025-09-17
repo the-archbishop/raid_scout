@@ -15,8 +15,6 @@ channels:
     priority: 1
   - name: sherlockhulmes_
     priority: 1
-  - name: poopernoodle
-    priority: 3
   - name: eliseteria
     priority: 3
   - name: parkenharbor

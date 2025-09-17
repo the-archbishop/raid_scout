@@ -1,12 +1,12 @@
-import logging
 import os
 import sys
 import json
-import time
-import random
 import requests
 import yaml
-from requests.adapters import HTTPAdapter, Retry
+import streamlit as st
+import pandas as pd
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,53 +14,90 @@ TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
 
 STATE_FILE = Path.home() / ".raid_scout_state.json"
-print(STATE_FILE)
-
-# Logging setup
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
 
 
+# ---------- HELPERS ----------
 def load_config(path):
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except FileNotFoundError:
+        st.error("raid_config.yml not found")
+    except yaml.YAMLError as e:
+        st.error("Failed to parse raid_config.yml")
+        st.exception(e)
+    except Exception as e:
+        st.exception(e)
 
-    if not cfg["twitch"]["client_id"] or not cfg["twitch"]["client_secret"]:
-        logging.error("Missing Twitch client_id/client_secret. Set them or use env:TWITCH_CLIENT_ID/SECRET.", file=sys.stderr)
-        sys.exit(1)
+    cfg.setdefault("twitch", {})
+    cfg.setdefault("raid", {})
+    cfg.setdefault("channels", [])
     return cfg
 
 
+def build_session(total=5, backoff=2, statuses=(429, 502, 503, 504), methods=("GET","POST")):
+    s = requests.Session()
+    r = Retry(
+        total=total,
+        backoff_factor=backoff,
+        status_forcelist=statuses,
+        allowed_methods=frozenset(m.upper() for m in methods),
+    )
+    adapter = HTTPAdapter(max_retries=r)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+def show_http_error(prefix: str, e: requests.HTTPError):
+    code = e.response.status_code if e.response is not None else "?"
+    st.error(f"{prefix}: HTTP {code}")
+    with st.expander("Details", expanded=False):
+        st.code((e.response.text if e.response is not None else "")[:2000])
+    st.exception(e)
+    st.stop()
+
+
+def parse_json(resp: requests.Response, context: str):
+    try:
+        return resp.json()
+    except json.JSONDecodeError as e:
+        st.error(f"{context}: invalid JSON")
+        with st.expander("Details", expanded=False):
+            st.code(resp.text[:2000])
+        st.exception(e)
+        st.stop()
+
+
 def get_twitch_token(client_id, client_secret):
-    session = requests.Session()
-    # Retry at 15s, 30s, 60s, 120s, 240s
-    retries = Retry(
-        total=5,
-        backoff_factor=15,
-        status_forcelist=[404, 429, 502, 503, 504],
-        allowed_methods=["POST"]
-    )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount('https://', adapter)
-    resp = session.request(
-        method="POST",
-        url=TOKEN_URL,
-        headers=None,
-        data={
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "grant_type": "client_credentials",
-        },
-        timeout=15
-    )
-    if resp.status_code == 200:
-        data = resp.json()
+    session = build_session()
+    try:
+        resp = session.post(
+            TOKEN_URL,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        show_http_error("Fetching app token failed", e)
+    except requests.RequestException as e:
+        st.error("Network error contacting Twitch (auth)")
+        st.exception(e)
+        st.stop()
+
+    data = parse_json(resp, "Token response")
+    try:
         return data["access_token"]
+    except KeyError as e:
+        st.error("Token response missing 'access_token'")
+        with st.expander("Details", expanded=False):
+            st.code(resp.text[:2000])
+        st.exception(e)
+        st.stop()
 
 
 def chunked(seq, size):
@@ -69,21 +106,39 @@ def chunked(seq, size):
 
 
 def fetch_live_streams(raid_targets, client_id, token):
+    session = build_session()
     headers = {"Client-Id": client_id, "Authorization": f"Bearer {token}"}
     live = {}
-    for batch in chunked([rt.lower() for rt in raid_targets], 100):
-        params = [("user_login", target) for target in batch]  # reset per batch
-        resp = requests.get(STREAMS_URL, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
-        for stream in resp.json().get("data", []):
-            name = stream.get("user_login", "").lower()
-            live[name] = {
-                "name": name,
-                "title": stream.get("title", ""),
-                "game": stream.get("game_name", ""),
-                "viewers": stream.get("viewer_count", 0),
-                "started_at": stream.get("started_at", "")
-            }
+
+    # local chunk helper (or use your existing one)
+    def chunked(seq, n):
+        for i in range(0, len(seq), n):
+            yield seq[i:i+n]
+
+    try:
+        for batch in chunked([rt.lower() for rt in raid_targets], 100):
+            params = [("user_login", target) for target in batch]
+            resp = session.get(STREAMS_URL, headers=headers, params=params, timeout=15)
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError as e:
+                show_http_error("Helix Get Streams failed", e)
+
+            payload = parse_json(resp, "Streams response")
+            for s in payload.get("data", []):
+                name = (s.get("user_login") or "").lower()
+                live[name] = {
+                    "name": name,
+                    "title": s.get("title", ""),
+                    "game": s.get("game_name", ""),
+                    "viewers": s.get("viewer_count", 0),
+                    "started_at": s.get("started_at", ""),
+                }
+    except requests.RequestException as e:
+        st.error("Network error contacting Twitch (streams)")
+        st.exception(e)
+        st.stop()
+
     return live
 
 
@@ -118,11 +173,10 @@ def mark_raided(login, state):
     save_state(state)
 
 
-def _parse_started_at(ts: str):
+def parse_started_at(ts: str):
     if not ts:
         return None
     try:
-        # 'Z' => UTC; fromisoformat needs '+00:00'
         if ts.endswith("Z"):
             ts = ts[:-1] + "+00:00"
         return datetime.fromisoformat(ts)
@@ -131,7 +185,7 @@ def _parse_started_at(ts: str):
 
 
 def uptime_hours(ts: str):
-    dt = _parse_started_at(ts)
+    dt = parse_started_at(ts)
     if not dt:
         return None
     # ensure aware UTC math
@@ -222,53 +276,65 @@ def pick_target(live_dict, config, state):
     return ranked[0], ranked
 
 
-def format_table(rows):
-    if not rows:
-        return ""
-    # simple fixed-width table for terminal
-    headers = ["Streamer", "Uptime", "Viewers", "Game", "Title"]
-    col1 = max(5, max(len(r["name"]) for r in rows))
-    col2 = 7
-    col3 = 7
-    col4 = min(24, max(4, *(len((r["game"] or "")[:24]) for r in rows)))
-    lines = []
-    lines.append(f"{headers[0]:<{col1}}  {headers[1]:>{col2}}  {headers[2]:>{col3}}  {headers[3]:<{col4}}  {headers[4]}")
-    lines.append("-" * (col1 + col2 + col3 + col4 + 8 + 40))
-    for r in rows:
-        game = (r["game"] or "")[:col4]
-        title = (r["title"] or "").replace("\n", " ")
-        uptime = format_uptime(r.get("uptime"))
-        lines.append(f"{r['name']:<{col1}}  {uptime:>{col2}}  {r['viewers']:>{col3}}  {game:<{col4}}  {title}")
-    return "\n".join(lines)
+# ---------- UI ----------
+st.set_page_config(page_title="Raid Scout", page_icon="🎯", layout="wide")
+st.title("🎯 JenAndAliona's Raid Scout")
 
+with st.sidebar:
+    st.markdown("**Config**")
+    cfg_path = st.text_input("Path to raid_config.yml", value="raid_config.yml")
+    client_id = os.getenv("TWITCH_CLIENT_ID") or st.text_input("TWITCH_CLIENT_ID", type="password")
+    client_secret = os.getenv("TWITCH_CLIENT_SECRET") or st.text_input("TWITCH_CLIENT_SECRET", type="password")
+    run_btn = st.button("Refresh")
 
-def main():
-    config = load_config("raid_config.yml")
-    client_id = config["twitch"]["client_id"]
-    client_secret = config["twitch"]["client_secret"]
+config = load_config(cfg_path)
+channels = [ c.get("name").lower() for c in config.get("channels", []) if (c.get("name")) ]
+raid_config = config.get("raid", {})
+st.markdown(
+    f"- **Cooldown**: {raid_config.get('cooldown_hours',0)}h · **Long stream**: ≥ {raid_config.get('long_stream_hours',4)}h · **Targets**: {', '.join(channels) or '—'}"
+)
 
-    token = get_twitch_token(client_id, client_secret)
+if run_btn or True:
+    if not client_id or not client_secret:
+        st.warning("Provide TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET (env or sidebar)")
+    elif not channels:
+        st.warning("No channels in config")
+    else:
+        try:
+            token = get_twitch_token(client_id, client_secret)
+            live = fetch_live_streams(channels, client_id, token)
+            if not live:
+                st.info("No configured channels are live")
+            else:
+                state = load_state()
+                choice, ranked = pick_target(live, config, state)
+                pick = choice
 
-    raid_targets = [c["name"] for c in config["channels"]]
-    live_dict = fetch_live_streams(raid_targets, client_id, token)
+                # Suggested
+                st.subheader("Suggested raid target")
+                st.markdown(f"**/raid `{pick['name']}`**")
+                st.caption(
+                    f"Priority {pick['priority']} · Uptime {format_uptime(pick['uptime'])} · "
+                    f"{pick.get('viewers',0)} viewers · {pick.get('game','')}"
+                )
+                if st.button(f"Mark raided: {pick['name']}"):
+                    s = load_state()
+                    mark_raided(pick["name"], s)
+                    st.success(f"Marked {pick['name']} as raided.")
 
-    if not live_dict:
-        logging.warning("None of the raid targets are live.")
-        sys.exit(0)
-
-    state = load_state()
-    choice, ranked = pick_target(live_dict, config, state)
-    print("\nCurrently live from list:\n")
-    print(format_table(ranked))
-    print()
-
-    if choice:
-        print(f"SUGGESTED RAID TARGET: {choice['name']}")
-        print(f"Command: /raid {choice['name']}")
-        # record the raid choice
-        state = load_state()  # reload real state in case we used --no-cooldown
-        mark_raided(choice["name"], state)
-
-
-if __name__ == "__main__":
-    main()
+                # Table
+                rows = [
+                    {
+                        "Login": r["name"],
+                        "Uptime": format_uptime(r["uptime"]),
+                        "Viewers": r.get("viewers", 0),
+                        "Game": r.get("game", ""),
+                        "Title": r.get("title", ""),
+                        "Priority": r["priority"],
+                    }
+                    for r in ranked
+                ]
+                table = pd.DataFrame(rows)
+                st.dataframe(table, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Error: {e}")
