@@ -69,11 +69,11 @@ raid:
   long_stream_hours: 2       # treat streams ≥ this as "long" for de-prioritization
 
 channels:
-  - name: traveldanielle
+  - name: streamer1
     priority: 1
-  - name: luality
+  - name: streamer2
     priority: 2
-  - name: lilaggy
+  - name: streamer3
     priority: 3
   # add more...
 ```
@@ -102,7 +102,7 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 - **Live channels list** shows:
   - **Streamer / Title** with avatar
   - **Uptime**, **Viewers**, **Game**, **Last Raided**
-  - **Raid** button per row
+  - **Raid** button per row to override raid target
 
 **State file**
 - Stored at: `~/.raid_scout_state.json`
@@ -113,20 +113,29 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 
 ## How ranking works
 
-For each live channel we compute:
-- `cooldown` (within `cooldown_hours` of last raid?)
-- `long_stream` (uptime ≥ `long_stream_hours`?)
-- `priority` (from YAML)
-- `uptime` (hours since `started_at`)
-- `viewers` (current viewer count)
+We rank every **live** channel using five signals, then sort with a deterministic tie-break chain (earlier items win):
 
-Then we sort by this tuple (ascending):
+1. **Cooldown** — channels *not* within `cooldown_hours` come first.
+2. **Stream length** — streams **under** `long_stream_hours` come first.
+3. **Priority** — lower `priority` number beats higher (1 > 2 > 3).
+4. **Uptime** — shorter uptime wins.
+5. **Viewers** — fewer viewers wins (final tiebreaker).
+
+**Signals computed per channel**
+
+- `cooldown`: `true` if last raided within `cooldown_hours` (soft penalty; still eligible).
+- `long_stream`: `true` if `uptime >= long_stream_hours`.
+- `priority`: integer from `raid_config.yml` (lower = higher priority).
+- `uptime`: hours since `started_at`.
+- `viewers`: current viewer count.
+
+**Equivalent sort key (ascending)**
 
 ```
 (cooldown, long_stream, priority, uptime, viewers)
 ```
 
-…which implements the policy described in **Features**.
+> If everyone’s on cooldown, rule 1 ties and rules 2–5 decide. If multiple fields tie, the next field breaks the tie, in order.
 
 ---
 ## Project structure (suggested)
