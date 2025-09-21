@@ -96,7 +96,7 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 
 ## Using the app
 
-- **Suggested raid target**: shows the current best pick with `/raid <name>`.
+- **Selected raid target**: shows the current best pick with `/raid <name>`.
 - **Override**: Click **Swap** next to any streamer in the list to set them as the suggestion; click **Clear override** to revert to the automatic pick.
 - **Mark raided**: records a timestamp in `~/.raid_scout_state.json`.
 - **Live channels list** shows:

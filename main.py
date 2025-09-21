@@ -373,7 +373,7 @@ else:
             avatars = fetch_user_avatars([r["name"] for r in ranked], client_id, token)
 
             # Suggested
-            st.subheader("Suggested raid target")
+            st.subheader("Selected raid target")
             st.markdown(f"**`/raid {pick['name']}`**")
             st.caption(
                 f"Priority {pick['priority']} · Uptime {format_uptime(pick['uptime'])} · "
@@ -408,6 +408,8 @@ else:
 
             st.markdown("<hr style='border: 0; border-top: 1px solid #333; margin: 4px 0 8px;'>", unsafe_allow_html=True)
 
+            state_now = load_state()
+
             for r in ranked:
                 c1, c2, c3, c4, c5, c6 = st.columns([3, 1, 1, 2, 2, 1], vertical_alignment="center")
                 with c1:
@@ -425,9 +427,16 @@ else:
                 with c2: st.write(f"**{format_uptime(r['uptime'])}**")
                 with c3: st.write(f"{r.get('viewers',0)}")
                 with c4: st.write((r.get('game') or "")[:32])
-                with c5: st.write(format_last_raided(r["name"], load_state()))
+                with c5:
+                    st.write(format_last_raided(r["name"], state_now))
                 with c6:
-                    if st.button("Swap", key=f"raid_{r['name']}"):
-                        st.session_state["raid_override"] = r["name"]; st.rerun()
+                    is_current = (r["name"].lower() == pick["name"].lower())
+                    # Show a disabled "Selected" pill for the current pick; otherwise a working "Swap" button
+                    if is_current:
+                        st.button("Selected", key=f"swap_{r['name']}", disabled=True)
+                    else:
+                        if st.button("Swap", key=f"swap_{r['name']}"):
+                            st.session_state["raid_override"] = r["name"]
+                            st.rerun()
     except Exception as e:
         st.error(f"Error: {e}")
