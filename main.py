@@ -192,11 +192,10 @@ def save_state(state):
 def is_on_cooldown(login, state, cooldown_hours):
     if cooldown_hours <= 0:
         return False
-    info = state.get("last_raids", {}).get(login)
-    if not info:
+    last = get_last_raided_dt(login, state)
+    if not last:
         return False
-    last = datetime.fromisoformat(info)
-    return datetime.utcnow() - last < timedelta(hours=cooldown_hours)
+    return datetime.now(timezone.utc) - last < timedelta(hours=cooldown_hours)
 
 
 def mark_raided(login, state):
@@ -267,20 +266,11 @@ def pick_target(live_dict, config, state):
 
     meta_by_login = {c["name"].lower(): c for c in config["channels"]}
 
-    def _last_raided_at(login):
-        ts = state.get("last_raids", {}).get(login)
-        if not ts:
-            return None
-        try:
-            return datetime.fromisoformat(ts)
-        except Exception:
-            return None
-
     candidates = []
     for name, stream in live_dict.items():
         meta = meta_by_login.get(name, {})
         on_cd = is_on_cooldown(name, state, cooldown_hours)
-        last_dt = _last_raided_at(name)
+        last_dt = get_last_raided_dt(name, state)
         uptime = uptime_hours(stream.get("started_at"))
         is_long = (uptime is not None) and (uptime >= long_stream_hours)
 
@@ -291,6 +281,7 @@ def pick_target(live_dict, config, state):
                 "cooldown": bool(on_cd),
                 "uptime": uptime,
                 "long_stream": is_long,
+                "last_raided_dt": last_dt,
                 "last_raided_at": last_dt.isoformat() if last_dt else None,
                 **stream,
             }
@@ -301,11 +292,11 @@ def pick_target(live_dict, config, state):
     
     def sort_key(c):
         # Time since last raid
-        if c["last_raided_at"]:
-            age_hours = (datetime.utcnow() - datetime.fromisoformat(c["last_raided_at"])).total_seconds() / 3600.0
+        if c["last_raided_dt"] is not None:
+            age_hours = (datetime.now(timezone.utc) - c["last_raided_dt"]).total_seconds() / 3600.0
+            age_order = -age_hours if c["cooldown"] else 0
         else:
-            age_hours = float("inf")  # never raided before
-        age_order = -age_hours if c["cooldown"] else 0  # only matters inside cooldown group
+            age_order = 0
 
         # Ordering:
         #   1) not on cooldown first
