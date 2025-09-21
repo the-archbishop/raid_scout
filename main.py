@@ -345,7 +345,7 @@ config = load_config(cfg_path)
 channels = [ c.get("name").lower() for c in config.get("channels", []) if (c.get("name")) ]
 raid_config = config.get("raid", {})
 st.html(
-    f"&nbsp;&nbsp;&nbsp;<sup><b>Cooldown</b>: {raid_config.get('cooldown_hours',0)}h · <b>Long stream</b>: ≥ {raid_config.get('long_stream_hours',4)}h · <b>Targets</b>: {', '.join(channels) or '—'}</sup>"
+    f"<sup><b>Cooldown</b>: {raid_config.get('cooldown_hours',0)}h · <b>Long stream</b>: ≥ {raid_config.get('long_stream_hours',4)}h · <b>Targets</b>: {', '.join(channels) or '—'}</sup>"
 )
 st.html("<br />")
 
@@ -359,7 +359,7 @@ else:
         token = get_twitch_token(client_id, client_secret)
         live = fetch_live_streams(channels, client_id, token)
         if not live:
-            st.info("No configured channels are live")
+            st.info("None of the configured raid targets are live.")
         else:
             state = load_state()
             choice, ranked = pick_target(live, config, state)
@@ -395,7 +395,7 @@ else:
             # Live
             st.html("<br />")
             st.markdown("#### Live channels")
-            st.caption("Click **Raid** to override the suggestion above.")
+            st.caption("Click **Swap** to override the suggestion above.")
 
             # Header row (match the widths you use for rows)
             h1, h2, h3, h4, h5, h6 = st.columns([3, 1, 1, 2, 2, 1], vertical_alignment="center")
@@ -427,7 +427,7 @@ else:
                 with c4: st.write((r.get('game') or "")[:32])
                 with c5: st.write(format_last_raided(r["name"], load_state()))
                 with c6:
-                    if st.button("Raid", key=f"raid_{r['name']}"):
+                    if st.button("Swap", key=f"raid_{r['name']}"):
                         st.session_state["raid_override"] = r["name"]; st.rerun()
     except Exception as e:
         st.error(f"Error: {e}")
