@@ -7,6 +7,8 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Dict, Any, List
+from filelock import FileLock
 
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
@@ -31,6 +33,44 @@ def load_config(path):
     cfg.setdefault("twitch", {})
     cfg.setdefault("raid", {})
     cfg.setdefault("channels", [])
+    return cfg
+
+
+def read_config_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def write_config_yaml(cfg: Dict[str, Any], path: str):
+    # Atomic-ish write with a lock to avoid concurrent corruption
+    lock = FileLock(path + ".lock")
+    with lock:
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp_path, path)
+
+
+def ensure_cfg_shape(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = dict(cfg or {})
+    cfg.setdefault("raid", {})
+    cfg.setdefault("channels", [])
+    # normalize channels list
+    norm = []
+    for c in cfg["channels"]:
+        name = (c.get("name") or c.get("login") or "").strip()
+        if not name:
+            continue
+        try:
+            prio = int(c.get("priority", 9999))
+        except Exception:
+            prio = 9999
+        norm.append({"name": name.lower(), "priority": prio})
+    cfg["channels"] = norm
+    # defaults
+    r = cfg["raid"]
+    r["cooldown_hours"] = int(r.get("cooldown_hours", 168))
+    r["long_stream_hours"] = float(r.get("long_stream_hours", 2))
     return cfg
 
 
@@ -323,10 +363,144 @@ def pick_target(live_dict, config, state):
     return ranked[0], ranked
 
 
+def config_admin_ui(config_path: str):
+    top_c1, top_c2 = st.columns([1, 5])
+    with top_c1:
+        if st.button("⚙️", help="Edit raid config", key="open_admin"):
+            st.session_state["show_admin"] = True
+
+    if not st.session_state.get("show_admin"):
+        return
+
+    st.markdown("### Admin · Raid Config")
+
+    ADMIN_PASSWORD = (
+        st.secrets.get("ADMIN_PASSWORD")
+        or os.getenv("ADMIN_PASSWORD")
+    )
+    if not st.session_state.get("is_admin"):
+        with st.expander("Sign in to edit", expanded=True):
+            if not ADMIN_PASSWORD:
+                st.warning("Set ADMIN_PASSWORD in Streamlit secrets or environment variables.")
+            pw = st.text_input("Admin password", type="password")
+            cols = st.columns([1,1])
+            with cols[0]:
+                if st.button("Sign in", type="primary"):
+                    if ADMIN_PASSWORD and pw == ADMIN_PASSWORD:
+                        st.session_state["is_admin"] = True
+                        st.success("Signed in.")
+                        st.rerun()
+                    else:
+                        st.error("Invalid password.")
+            with cols[1]:
+                if st.button("Close"):
+                    st.session_state["show_admin"] = False
+                    st.rerun()
+        return
+
+    # --- Load config fresh for editing ---
+    try:
+        raw_cfg = read_config_yaml(config_path)
+    except Exception as e:
+        st.error("Failed to read raid_config.yml")
+        st.exception(e)
+        return
+
+    cfg = ensure_cfg_shape(raw_cfg)
+
+    # --- Editor form ---
+    with st.form("config_editor", clear_on_submit=False):
+        st.subheader("Raid rules")
+        rc = cfg["raid"]
+        colA, colB = st.columns(2)
+        with colA:
+            cooldown_hours = st.number_input("Cooldown (hours)", min_value=0, max_value=24*30, value=int(rc["cooldown_hours"]), step=1)
+        with colB:
+            long_stream_hours = st.number_input("Long stream threshold (hours)", min_value=0.0, max_value=48.0, value=float(rc["long_stream_hours"]), step=0.5, format="%.1f")
+
+        st.subheader("Channels")
+        st.caption("Edit the table; add rows for new channels. **priority**: lower = higher priority.")
+        # Build editable table
+        import pandas as pd
+        ch_df = pd.DataFrame(cfg["channels"], columns=["name", "priority"])
+        ch_df = ch_df.astype({"name": "string", "priority": "int64"})
+        edited = st.data_editor(
+            ch_df,
+            num_rows="dynamic",
+            width="stretch",
+            column_config={
+                "name": st.column_config.TextColumn("name (login)", help="Twitch login, lowercase"),
+                "priority": st.column_config.NumberColumn("priority", help="Lower = higher priority", min_value=1, max_value=9999, step=1),
+            },
+            key="channels_editor",
+        )
+
+        # Actions
+        save_btn = st.form_submit_button("Save changes", type="primary")
+        cancel_btn = st.form_submit_button("Cancel")
+
+    # --- Handle actions ---
+    if cancel_btn:
+        st.session_state["show_admin"] = False
+        st.info("Canceled.")
+        st.rerun()
+
+    if save_btn:
+        # Validate & normalize edits
+        rows = edited.fillna({"name": "", "priority": 9999}).to_dict(orient="records")
+        cleaned: List[Dict[str, Any]] = []
+        seen = set()
+        for r in rows:
+            name = (str(r.get("name") or "").strip().lower())
+            if not name:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                prio = int(r.get("priority", 9999))
+            except Exception:
+                prio = 9999
+            cleaned.append({"name": name, "priority": prio})
+
+        # Write back to YAML
+        new_cfg = {
+            "raid": {
+                "cooldown_hours": int(cooldown_hours),
+                "long_stream_hours": float(long_stream_hours),
+                # keep any other future keys present
+                **{k: v for k, v in cfg["raid"].items() if k not in ("cooldown_hours", "long_stream_hours")},
+            },
+            "channels": cleaned,
+        }
+
+        try:
+            write_config_yaml(new_cfg, config_path)
+            st.success("Saved raid_config.yml")
+            # Optionally re-load live config in app
+            st.session_state["show_admin"] = False
+            st.rerun()
+        except Exception as e:
+            st.error("Failed to write raid_config.yml")
+            st.exception(e)
+
+    # Footer controls
+    st.divider()
+    colx, coly = st.columns([1,1])
+    with colx:
+        if st.button("Close settings"):
+            st.session_state["show_admin"] = False
+            st.rerun()
+    with coly:
+        if st.button("Sign out"):
+            st.session_state.pop("is_admin", None)
+            st.success("Signed out.")
+            st.rerun()
+
+
 # ---------- UI ----------
 st.set_page_config(page_title="Raid Scout", page_icon="🎯", layout="wide")
 st.title("🎯 JenAndAliona's Raid Scout")
-
 
 cfg_path = "raid_config.yml"
 client_id = os.getenv("TWITCH_CLIENT_ID") or st.secrets.get("TWITCH_CLIENT_ID")
@@ -338,6 +512,7 @@ raid_config = config.get("raid", {})
 st.html(
     f"<sup><b>Cooldown</b>: {raid_config.get('cooldown_hours',0)}h · <b>Long stream</b>: ≥ {raid_config.get('long_stream_hours',4)}h · <b>Targets</b>: {', '.join(channels) or '—'}</sup>"
 )
+config_admin_ui("raid_config.yml")
 st.html("<br />")
 
 
@@ -364,7 +539,7 @@ else:
             avatars = fetch_user_avatars([r["name"] for r in ranked], client_id, token)
 
             # Suggested
-            st.subheader("Selected raid target")
+            st.subheader("Selected Raid Target")
             st.markdown(f"**`/raid {pick['name']}`**")
             st.caption(
                 f"Priority {pick['priority']} · Uptime {format_uptime(pick['uptime'])} · "

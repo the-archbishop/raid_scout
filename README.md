@@ -111,6 +111,21 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 
 ---
 
+## Admin Panel
+
+Click the ⚙️ button in the app to open the **Raid Config Editor**.  
+You’ll be prompted for the `ADMIN_PASSWORD` (from secrets or env vars).  
+- **Raid rules**: edit cooldown hours and long stream threshold with number inputs.  
+- **Channels table**: add, edit, or delete target channels and their priorities using an interactive table.  
+- **Save**: writes changes back to `raid_config.yml`.  
+- **Cancel/Close**: discard changes and return to the main view.  
+- **Sign out**: clear the admin session.  
+
+Notes:
+- Comments and formatting in `raid_config.yml` may be lost on save (PyYAML rewrite).
+
+---
+
 ## How ranking works
 
 We rank every **live** channel using five signals, then sort with a deterministic tie-break chain (earlier items win):
