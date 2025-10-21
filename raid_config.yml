@@ -16,3 +16,5 @@ channels:
   priority: 3
 - name: lilaggy
   priority: 3
+- name: ipaintbirbs
+  priority: 3
