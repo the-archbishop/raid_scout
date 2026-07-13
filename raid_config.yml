@@ -8,7 +8,7 @@ channels:
   priority: 3
 - name: luality
   priority: 1
-- name: sherlockhulmes_
+- name: marabunny
   priority: 1
 - name: eliseteria
   priority: 3
@@ -18,3 +18,9 @@ channels:
   priority: 3
 - name: ipaintbirbs
   priority: 3
+- name: foomia
+  priority: 1
+- name: tracywiles
+  priority: 1
+- name: theosolomon1
+  priority: 2

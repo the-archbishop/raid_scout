@@ -3,3 +3,4 @@ PyYAML
 streamlit
 pandas
 filelock
+tinydb

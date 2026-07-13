@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 from filelock import FileLock
+from tinydb import TinyDB, Query
 
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
@@ -500,7 +501,7 @@ def config_admin_ui(config_path: str):
 
 # ---------- UI ----------
 st.set_page_config(page_title="Raid Scout", page_icon="🎯", layout="wide")
-st.title("🎯 JenAndAliona's Raid Scout")
+st.title("🎯 AlionaAnd's Raid Scout")
 
 cfg_path = "raid_config.yml"
 client_id = os.getenv("TWITCH_CLIENT_ID") or st.secrets.get("TWITCH_CLIENT_ID")
